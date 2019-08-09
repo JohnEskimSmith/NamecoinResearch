@@ -12,7 +12,7 @@ import time
 urllib3.disable_warnings()
 
 
-def get_block_hashs(_hashs, server):
+def get_block_hashs(_hashs, server, user_password):
     headers = {'content-type':'text/plain'}
     if isinstance(_hashs, collections.Iterable):
         hashs = _hashs
@@ -28,7 +28,7 @@ def get_block_hashs(_hashs, server):
                   }
         payloads.append(payload)
     session_request = requests.Session()
-    session_request.auth = ("user", "moscow")
+    session_request.auth = user_password
     session_request.headers.update(headers)
     for payload in payloads:
         response = session_request.post(server, data=json.dumps(payload))
@@ -38,7 +38,7 @@ def get_block_hashs(_hashs, server):
                 yield data['result']
 
 
-def get_block_info(_hashs, server):
+def get_block_info(_hashs, server, user_password):
     headers = {'content-type':'text/plain'}
     if isinstance(_hashs, collections.Iterable) and not isinstance(_hashs, str):
         hashs = _hashs
@@ -54,7 +54,7 @@ def get_block_info(_hashs, server):
         }
         payloads.append(payload)
     session_request = requests.Session()
-    session_request.auth = ("user", "moscow")
+    session_request.auth = user_password
     session_request.headers.update(headers)
     for payload in payloads:
         response = session_request.post(server, data=json.dumps(payload))
@@ -83,9 +83,9 @@ def init_connect_to_mongodb(ip, port, dbname, username=None, password=None):
     while not check and check_i < count_repeat:
         try:
             client = MongoClient(connect_string_to, serverSelectionTimeoutMS=60)
-            o = client.server_info()
+            client.server_info()
             check = True
-        except Exception as ex:
+        except:
             print(f"try {check_i}, connecting - error, sleep - 1 sec.")
             time.sleep(sleep_sec)
             check_i += 1
@@ -110,7 +110,7 @@ def grouper(count, iterable, fillvalue=None):
     return result
 
 
-def return_last_namecoinblock(server):
+def return_last_namecoinblock(server, user_password):
     headers = {'content-type':'text/plain'}
     payload = {
         "method": "getblockcount",
@@ -120,7 +120,7 @@ def return_last_namecoinblock(server):
     }
 
     session_request = requests.Session()
-    session_request.auth = ("user", "moscow")
+    session_request.auth = user_password
     session_request.headers.update(headers)
     response = session_request.post(server, data=json.dumps(payload))
     if response.ok:
@@ -142,21 +142,27 @@ def return_last_namecoinblock_local(col):
 
 
 if __name__ == '__main__':
-    # mongo
-    username = ""
-    password = ""
-    ip = "192.168.8.175"
-    port = "27017"
+    # mongodb
+    ip_mongodb = "192.168.8.175"
+    port_mongodb = "27017"
+    mongo_user_password = ("", "")
+    username_mongodb, password_mongodb = mongo_user_password
+
     dbname = "NamecoinExplorer"
     collection_name = "Blocks"
-    cl_mongo = init_connect_to_mongodb(ip, port, dbname)
+
+    cl_mongo = init_connect_to_mongodb(ip_mongodb, port_mongodb, dbname, username_mongodb, password_mongodb)
     db = cl_mongo[dbname]
     # --------
-    server_rpc = "http://192.168.8.175:8336"
+    server_rpc = "http://68.183.0.119:8336"
+    server_rpc_user_password = ("user", "moscow")
+    # ---------
     time_to_sleep = 360
+    # ---------
+    print('working with blocks...')
     while True:
-        print('starting update...')
-        lastblock_from_chains = return_last_namecoinblock(server_rpc)
+
+        lastblock_from_chains = return_last_namecoinblock(server_rpc, server_rpc_user_password)
         lastblock_local = return_last_namecoinblock_local(db[collection_name])
 
         if lastblock_from_chains and lastblock_local:
@@ -170,8 +176,8 @@ if __name__ == '__main__':
                 for group_block in group_blocks:
                     i += 1
                     print("group of blocks:{}".format(i*count_in_block))
-                    hashs = get_block_hashs(group_block, server_rpc)
-                    data_block = get_block_info(hashs, server_rpc)
+                    hashs = get_block_hashs(group_block, server_rpc, server_rpc_user_password)
+                    data_block = get_block_info(hashs, server_rpc, server_rpc_user_password)
                     _tmp = []
                     for current_block in data_block:
                         if 'time' in current_block :

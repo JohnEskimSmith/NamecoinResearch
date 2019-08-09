@@ -43,10 +43,10 @@ def init_connect_to_mongodb(ip, port, dbname, username=None, password=None):
     while not check and check_i < count_repeat:
         try:
             client = MongoClient(connect_string_to, serverSelectionTimeoutMS=60)
-            o = client.server_info()
+            client.server_info()
             check = True
-        except Exception as ex:
-            print(f"try {check_i}, connecting - error, sleep - 1 sec.")
+        except:
+            print(f"try {check_i}, connecting - error, sleep - {sleep_sec} sec.")
             time.sleep(sleep_sec)
             check_i += 1
     if check:
@@ -86,7 +86,20 @@ def return_ip(text):
         return result
 
 
-def return_info_about_txs(_txs, server):
+def extract_email_version_v2(data):
+    if '@' in data:
+        emails = re.findall(r'[\w\*\w.-]+@[\w\.-]+', data)
+        if len(emails) > 0:
+            tmp = list(filter(lambda y: '.' in y and len(y) > 4, map(lambda y: y.strip().strip('.'), emails)))
+            if len(tmp) > 0:
+                result = list(map(lambda y: y.lower().rstrip('-'), filter(is_english, tmp)))
+                if len(result) > 0:
+                    for email in result:
+                        if '.' in ''.join(email.split('@')[1:]):
+                            yield email
+
+
+def return_info_about_txs(_txs, server, user_password):
     headers = {'content-type': 'text/plain'}
     if isinstance(_txs, collections.Iterable) and not isinstance(_txs, str):
         txs = _txs
@@ -104,7 +117,7 @@ def return_info_about_txs(_txs, server):
         }
         payloads.append(payload)
     session_request = requests.Session()
-    session_request.auth = ("user", "moscow")
+    session_request.auth = user_password
     session_request.headers.update(headers)
 
     for payload in payloads:
@@ -116,43 +129,29 @@ def return_info_about_txs(_txs, server):
                 yield data['result']
 
 
-def extract_email_version_v2(data):
-    if '@' in data:
-        emails = re.findall(r'[\w\*\w.-]+@[\w\.-]+', data)
-        if len(emails) > 0:
-            tmp = list(filter(lambda y: '.' in y and len(y) > 4, map(lambda y: y.strip().strip('.'), emails)))
-            if len(tmp) > 0:
-                result = list(map(lambda y: y.lower().rstrip('-'), filter(is_english, tmp)))
-                if len(result) > 0:
-                    for email in result:
-                        if '.' in ''.join(email.split('@')[1:]):
-                            yield email
+def save_block(group_block_and_settings):
 
+    def return_txs_from_mongodb(col, block_h):
+        result = []
+        rows = col.find({'height': {'$in': block_h}})
+        for row in rows:
+            result.extend(row['tx'])
+        return result
 
-def return_txs_from_mongodb(col, block_h):
-    result = []
-    rows = col.find({'height':{'$in':block_h}})
-    for row in rows:
-        result.extend(row['tx'])
-    return result
+    group_block, settings = group_block_and_settings
 
+    ip, port, dbname, collection_name_blocks, collection_name_tx, \
+    server_rpc, server_rpc_user_password, mongo_user_password = settings
 
-def save_block(group_block):
-    ip = "192.168.8.175"
-    port = "27017"
-    dbname = "NamecoinExplorer"
-    collection_name = "Blocks"
-    collection_name_tx = "Tx"
-    cl_mongo = init_connect_to_mongodb(ip, port, dbname)
+    user_mongodb, pass_mongodb = mongo_user_password
+    cl_mongo = init_connect_to_mongodb(ip, port, dbname, user_mongodb, pass_mongodb)
     db = cl_mongo[dbname]
-    # --------
-    server_rpc = "http://192.168.8.175:8336"
-    #---------
 
-    txs = return_txs_from_mongodb(db[collection_name], group_block)
+    txs = return_txs_from_mongodb(db[collection_name_blocks], group_block)
     _tmp = []
-    for row in return_info_about_txs(txs, server_rpc):
-
+    transactions = return_info_about_txs(txs, server_rpc, server_rpc_user_password)
+    for _row in transactions:
+        row = _row.copy()
         try:
             _emails = list(extract_email_version_v2(json.dumps(row)))
             if len(_emails) > 0:
@@ -183,20 +182,25 @@ def save_block(group_block):
         _tmp.append(row)
     if len(_tmp) > 0:
         db[collection_name_tx].insert_many(_tmp)
-        time.sleep(0.5)
+        time.sleep(0.3)
         return True
 
 
-def pool_for_mongodb(blocks, max_workers=16):
+def pool_for_mongodb(blocks, struct_for_save_block, max_workers=16):
     count_block = len([b for block in blocks for b in block])
     if len(blocks) > 0:
         print('need update Tx, blocks:{}'.format(count_block))
+        # not an elegant method, but also ...
+        iters = [(block, struct_for_save_block) for block in blocks]
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            for block, result in zip(blocks, executor.map(save_block, blocks)):
-                print("{} --{}  done:{}".format(block[0], block[-1], result))
+            for block, result in zip(blocks, executor.map(save_block, iters)):
+                if result:
+                    print(f"blocks:{block[0]}-{block[-1]}, status:{result}")
+                else:
+                    print("errors:", block, result)
 
 
-def return_need_blocks():
+def return_need_blocks(ip, port, dbname, collection_name_blocks, mongo_user_password):
 
     def return_last_namecoinblock_local(col):
         try:
@@ -205,34 +209,42 @@ def return_need_blocks():
         except Exception as e:
             print(str(e))
 
-    # mongo
-    username = ""
-    password = ""
-    ip = "192.168.8.175"
-    port = "27017"
-    dbname = "NamecoinExplorer"
-    collection_name_tx = "Tx"
-    collection_name_block = 'Blocks'
-    cl_mongo = init_connect_to_mongodb(ip, port, dbname)
+    user, password = mongo_user_password
+    cl_mongo = init_connect_to_mongodb(ip, port, dbname, user, password)
     db = cl_mongo[dbname]
     last_tx_hash = db[collection_name_tx].find_one({'$query': {}, '$orderby': {'clean_datetime_block': -1}})['blockhash']
-    number_block_latest_tx = db[collection_name_block].find_one({'_id':last_tx_hash})['height']
-    last_block_local = return_last_namecoinblock_local(db[collection_name_block])
+    number_block_latest_tx = db[collection_name_blocks].find_one({'_id':last_tx_hash})['height']
+    last_block_local = return_last_namecoinblock_local(db[collection_name_blocks])
     print(number_block_latest_tx, last_block_local)
     if number_block_latest_tx < last_block_local:
         n_block = range(number_block_latest_tx+1, last_block_local+1)
-        count_in_block = 500
+        count_in_block = 40
         group_blocks = grouper(count_in_block, n_block)
         return group_blocks
 
 
 if __name__ == '__main__':
+    ip_mongodb = "192.168.8.175"
+    port_mongodb = "27017"
+    mongo_user_password = ("", "")
+    dbname = "NamecoinExplorer"
+    collection_name_blocks = "Blocks"
+    collection_name_tx = "Tx"
+    # ----------
+    server_rpc = "http://68.183.0.119:8336"
+    server_rpc_user_password = ("user", "moscow")
+    # ----------
     time_to_sleep = 360  # time to sleep in while
+
+    struct_for_save_block = (ip_mongodb, port_mongodb, dbname, collection_name_blocks,
+                             collection_name_tx, server_rpc, server_rpc_user_password, mongo_user_password)
     while True:
-        group_blocks = return_need_blocks()  # return struct with groups of blocks [[]...[]]
+        # return struct with groups of blocks [[]...[]]
+        group_blocks = return_need_blocks(ip_mongodb, port_mongodb, dbname, collection_name_blocks, mongo_user_password)
         if group_blocks:
             if len([b for block in group_blocks for b in block]) > 0:
-                pool_for_mongodb(group_blocks)
+                pool_for_mongodb(group_blocks, struct_for_save_block)
         else:
-            print(f'time to sleep(sec.):{time_to_sleep}')
+            print("skip operation")
+        print(f'time to sleep(sec.):{time_to_sleep}')
         time.sleep(time_to_sleep)
