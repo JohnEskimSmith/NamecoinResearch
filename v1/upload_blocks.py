@@ -66,7 +66,7 @@ def get_block_info(_hashs, server, user_password):
 
 def init_connect_to_mongodb(ip, port, dbname, username=None, password=None):
     """
-    :param ip:  ip server MongoDB: mongodb.prod.int.nt-com.ru
+    :param ip:  ip server MongoDB:
     :param port: 27017
     :return: True, if connected, and set value mongoclient - MongoClient
     """
@@ -76,6 +76,8 @@ def init_connect_to_mongodb(ip, port, dbname, username=None, password=None):
         connect_string_to = 'mongodb://{}:{}/{}'.format(ip, port, dbname)
 
     check = False
+    mongoclient = None
+
     count_repeat = 4
     sleep_sec = 1
     check_i = 0
@@ -86,7 +88,7 @@ def init_connect_to_mongodb(ip, port, dbname, username=None, password=None):
             client.server_info()
             check = True
         except:
-            print(f"try {check_i}, connecting - error, sleep - 1 sec.")
+            print("try {}, connecting - error, sleep - 1 sec.".format(check_i))
             time.sleep(sleep_sec)
             check_i += 1
     if check:
@@ -118,18 +120,20 @@ def return_last_namecoinblock(server, user_password):
         "jsonrpc": "1.0",
         "id": "curltest"
     }
-
-    session_request = requests.Session()
-    session_request.auth = user_password
-    session_request.headers.update(headers)
-    response = session_request.post(server, data=json.dumps(payload))
-    if response.ok:
-        try:
-            data = response.json()
-            return data['result']
-        except Exception as e:
-            print(str(e))
-            print(f'errors:{response.text}')
+    try:
+        session_request = requests.Session()
+        session_request.auth = user_password
+        session_request.headers.update(headers)
+        response = session_request.post(server, data=json.dumps(payload))
+        if response.ok:
+            try:
+                data = response.json()
+                return data['result']
+            except Exception as e:
+                print(str(e))
+                print('errors:{}'.format(response.text))
+    except:
+        pass
 
 
 def return_last_namecoinblock_local(col):
@@ -140,51 +144,36 @@ def return_last_namecoinblock_local(col):
         print(str(e))
 
 
-
-if __name__ == '__main__':
-    # mongodb
-    ip_mongodb = "192.168.8.175"
-    port_mongodb = "27017"
-    mongo_user_password = ("", "")
+def process_upload_block(ip_mongodb, port_mongodb, mongo_user_password, dbname, collection_name, server_rpc, server_rpc_user_password):
     username_mongodb, password_mongodb = mongo_user_password
-
-    dbname = "NamecoinExplorer"
-    collection_name = "Blocks"
-
     cl_mongo = init_connect_to_mongodb(ip_mongodb, port_mongodb, dbname, username_mongodb, password_mongodb)
-    db = cl_mongo[dbname]
-    # --------
-    server_rpc = "http://68.183.0.119:8336"
-    server_rpc_user_password = ("user", "moscow")
-    # ---------
-    time_to_sleep = 360
-    # ---------
-    print('working with blocks...')
-    while True:
-
+    if cl_mongo:
+        db = cl_mongo[dbname]
         lastblock_from_chains = return_last_namecoinblock(server_rpc, server_rpc_user_password)
+
         lastblock_local = return_last_namecoinblock_local(db[collection_name])
 
         if lastblock_from_chains and lastblock_local:
             if lastblock_local < lastblock_from_chains:
-                print(f'Need update local database.\nLast block local:{lastblock_local}\nLast block Namecoin:{lastblock_from_chains}')
+                print(
+                    'Need update local database.\nLast block local:{}\nLast block Namecoin:{}'.format(lastblock_local,lastblock_from_chains))
                 # ---------
-                n_block = range(lastblock_local+1, lastblock_from_chains+1)
+                n_block = range(lastblock_local + 1, lastblock_from_chains + 1)
                 count_in_block = 100
                 group_blocks = grouper(count_in_block, n_block)
                 i = 0
                 for group_block in group_blocks:
                     i += 1
-                    print("group of blocks:{}".format(i*count_in_block))
+                    print("group of blocks:{}".format(i * count_in_block))
                     hashs = get_block_hashs(group_block, server_rpc, server_rpc_user_password)
                     data_block = get_block_info(hashs, server_rpc, server_rpc_user_password)
                     _tmp = []
                     for current_block in data_block:
-                        if 'time' in current_block :
-                            timeblock = datetime.datetime.utcfromtimestamp(current_block ['time'])
+                        if 'time' in current_block:
+                            timeblock = datetime.datetime.utcfromtimestamp(current_block['time'])
                             current_block['clean_datetime'] = timeblock
                         current_block['_id'] = current_block['hash']
-                        _tmp.append(current_block )
+                        _tmp.append(current_block)
                     print("inserted N blocks:{}".format(len(_tmp)))
                     try:
                         db[collection_name].insert_many(_tmp)
@@ -192,9 +181,9 @@ if __name__ == '__main__':
                         print(str(e))
             else:
                 print("not need update...")
-        print(f'time to sleep(sec.):{time_to_sleep}')
-        time.sleep(time_to_sleep)
+        else:
+            print(f'last blcok from chain:{lastblock_from_chains}, last block from DB:{lastblock_local}')
 
 
-
-
+    else:
+        print('errors with connect to MongoDB: {}:{}'.format(ip_mongodb, port_mongodb))

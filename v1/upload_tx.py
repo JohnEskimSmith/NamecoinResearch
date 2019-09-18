@@ -11,9 +11,14 @@ import datetime
 import concurrent.futures
 import urllib3
 from pymongo import MongoClient
-import time
-urllib3.disable_warnings()
+from time import sleep
 
+import os
+import configparser
+import sys
+
+urllib3.disable_warnings()
+from upload_blocks import process_upload_block
 
 def is_english(s):
     try:
@@ -47,11 +52,13 @@ def init_connect_to_mongodb(ip, port, dbname, username=None, password=None):
             check = True
         except:
             print(f"try {check_i}, connecting - error, sleep - {sleep_sec} sec.")
-            time.sleep(sleep_sec)
+            sleep(sleep_sec)
             check_i += 1
     if check:
         mongoclient = client
-    return mongoclient
+        return mongoclient
+    else:
+        print('errors with connect to MongoDB: {}:{}'.format(ip, port))
 
 
 def grouper(count, iterable, fillvalue=None):
@@ -182,7 +189,7 @@ def save_block(group_block_and_settings):
         _tmp.append(row)
     if len(_tmp) > 0:
         db[collection_name_tx].insert_many(_tmp)
-        time.sleep(0.3)
+        sleep(0.3)
         return True
 
 
@@ -200,7 +207,7 @@ def pool_for_mongodb(blocks, struct_for_save_block, max_workers=16):
                     print("errors:", block, result)
 
 
-def return_need_blocks(ip, port, dbname, collection_name_blocks, mongo_user_password):
+def return_need_blocks(ip, port, dbname, collection_name_blocks, mongo_user_password, max_blocks):
 
     def return_last_namecoinblock_local(col):
         try:
@@ -218,33 +225,89 @@ def return_need_blocks(ip, port, dbname, collection_name_blocks, mongo_user_pass
     print(number_block_latest_tx, last_block_local)
     if number_block_latest_tx < last_block_local:
         n_block = range(number_block_latest_tx+1, last_block_local+1)
-        count_in_block = 40
+        # count_blocks
+        count_in_block = max_blocks
         group_blocks = grouper(count_in_block, n_block)
         return group_blocks
 
 
 if __name__ == '__main__':
-    ip_mongodb = "192.168.8.175"
-    port_mongodb = "27017"
-    mongo_user_password = ("", "")
-    dbname = "NamecoinExplorer"
-    collection_name_blocks = "Blocks"
-    collection_name_tx = "Tx"
+    settings_for_project = 'settingsNamecoin.cfg'
+    loaded = False
+
+    PAREENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir))
+    CURRENT_DIR = os.path.dirname(os.path.realpath(__file__))
+    sys.path.append(PAREENT_DIR)
+    config_file_path = '{}{}{}'.format(CURRENT_DIR, os.sep, settings_for_project)
+
+    if os.path.exists(config_file_path):
+        try:
+            config_project = configparser.ConfigParser()
+            config_project.read(config_file_path, encoding='utf-8')
+            loaded = True
+        except:
+            pass
+
+    if not loaded:
+        sys.exit(1)
+
+    ip_mongodb = config_project['mongodb']['ip']
+    port_mongodb = config_project['mongodb']['port']
+
+    mongo_user_password = (config_project['mongodb']['user'],
+                           config_project['mongodb']['password'])
+
+    dbname = config_project['mongodb']['db']
+    collection_name_blocks = config_project['mongodb']['collection_name_blocks']
+    collection_name_tx = config_project['mongodb']['collection_name_tx']
     # ----------
-    server_rpc = "http://68.183.0.119:8336"
-    server_rpc_user_password = ("user", "moscow")
+    server_rpc = config_project['namecoindRPC']['uri']
+    server_rpc_user_password = (config_project['namecoindRPC']['user'],
+                                config_project['namecoindRPC']['password'])
     # ----------
-    time_to_sleep = 360  # time to sleep in while
+    default_sleep = 360
+    time_to_sleep = config_project['other']['sleep']
+    if time_to_sleep.isdigit():
+        default_sleep = int(time_to_sleep)
+
+    max_processes = 4
+    n_processes = config_project['other']['processes']
+    if n_processes.isdigit():
+        max_processes = int(n_processes)
+
+    max_blocks = 40
+    n_blocks = config_project['other']['blocks']
+    if n_blocks.isdigit():
+        max_blocks= int(n_blocks)
+
+    # ----------
 
     struct_for_save_block = (ip_mongodb, port_mongodb, dbname, collection_name_blocks,
                              collection_name_tx, server_rpc, server_rpc_user_password, mongo_user_password)
+    check = False
     while True:
-        # return struct with groups of blocks [[]...[]]
-        group_blocks = return_need_blocks(ip_mongodb, port_mongodb, dbname, collection_name_blocks, mongo_user_password)
-        if group_blocks:
-            if len([b for block in group_blocks for b in block]) > 0:
-                pool_for_mongodb(group_blocks, struct_for_save_block)
-        else:
-            print("skip operation")
-        print(f'time to sleep(sec.):{time_to_sleep}')
-        time.sleep(time_to_sleep)
+        try:
+            process_upload_block(ip_mongodb, port_mongodb, mongo_user_password,
+                                 dbname, collection_name_blocks,
+                                 server_rpc, server_rpc_user_password)
+            check = True
+        except:
+            print('something is wrong...')
+        if check:
+            # return struct with groups of blocks [[]...[]]
+            try:
+                group_blocks = return_need_blocks(ip_mongodb,
+                                                  port_mongodb,
+                                                  dbname,
+                                                  collection_name_blocks,
+                                                  mongo_user_password,
+                                                  max_blocks=max_blocks)
+                if group_blocks:
+                    if len([b for block in group_blocks for b in block]) > 0:
+                        pool_for_mongodb(group_blocks, struct_for_save_block, max_workers=max_processes)
+                else:
+                    print("skip operation")
+            except:
+                print('something is wrong...')
+            print(f'time to sleep(sec.):{default_sleep}')
+            sleep(default_sleep)
